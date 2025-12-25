@@ -81,19 +81,64 @@ class TestUntitled():
           self.driver.execute_script("arguments[0].click();", element)
           return element
         except ElementClickInterceptedException:
-          # If intercepted, try to click via document.querySelector (when we have a CSS selector)
+          # If intercepted, try several fallbacks (useful on Windows with sticky footers)
+          # 1) Try clicking via document.querySelector when we have a CSS selector
           if selector_str:
             try:
               self.driver.execute_script("document.querySelector(arguments[0]).click();", selector_str)
               return self.driver.find_element(by, value)
             except Exception:
               pass
-          # Try clicking the element normally as a fallback
+
+          # 2) Try scrolling a bit up to avoid sticky footers
+          for offset in ( -60, -120, -180 ):
+            try:
+              self.driver.execute_script("arguments[0].scrollIntoView({block:'center'}); window.scrollBy(0, arguments[1]);", element, offset)
+              time.sleep(0.2)
+              try:
+                self.driver.execute_script("arguments[0].click();", element)
+                return element
+              except Exception:
+                pass
+            except Exception:
+              pass
+
+          # 3) Temporarily disable pointer events on likely fixed/sticky footers and retry
+          try:
+            self.driver.execute_script(
+              "document.querySelectorAll('footer, [class*=fixed], [class*=sticky], [id*=footer]').forEach(function(e){ e.setAttribute('data-old-pointer-events', e.style.pointerEvents || ''); e.style.pointerEvents='none'; });"
+            )
+            try:
+              self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+              time.sleep(0.2)
+              self.driver.execute_script("arguments[0].click();", element)
+              return element
+            except Exception:
+              pass
+          finally:
+            # restore pointer-events
+            try:
+              self.driver.execute_script(
+                "document.querySelectorAll('[data-old-pointer-events]').forEach(function(e){ e.style.pointerEvents = e.getAttribute('data-old-pointer-events'); e.removeAttribute('data-old-pointer-events'); });"
+              )
+            except Exception:
+              pass
+
+          # 4) Try normal click as a fallback
           try:
             element.click()
             return element
           except Exception:
-            raise
+            pass
+
+          # 5) As last resort, click using ActionChains (click at element center)
+          try:
+            ActionChains(self.driver).move_to_element(element).click().perform()
+            return element
+          except Exception:
+            pass
+          # If none of the fallbacks worked, re-raise to allow outer logic to capture artifacts
+          raise
         except Exception:
           # Fallback to normal click if JS fails for other reasons
           element.click()
